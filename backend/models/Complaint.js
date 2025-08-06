@@ -1,526 +1,884 @@
-const mongoose = require('mongoose');
-const moment = require('moment');
+import mongoose from 'mongoose';
+import slugify from 'slugify';
+import validator from 'validator';
 
-const timelineEntrySchema = new mongoose.Schema({
+const { Schema } = mongoose;
+
+/**
+ * Timeline Entry Schema for tracking complaint progress
+ */
+const timelineSchema = new Schema({
   action: {
     type: String,
-    required: true,
-    enum: [
-      'submitted', 'ai_classified', 'assigned_officer', 'assigned_mitra', 
-      'in_progress', 'resolved', 'rejected', 'escalated', 'reopened', 
-      'feedback_received', 'closed'
-    ]
+    required: [true, 'Timeline action is required'],
+    enum: {
+      values: [
+        'submitted', 'classified', 'assigned', 'in_progress', 'resolved',
+        'rejected', 'escalated', 'reopened', 'feedback_received', 'closed'
+      ],
+      message: 'Invalid timeline action'
+    }
   },
   description: {
     type: String,
-    required: true
+    required: [true, 'Timeline description is required'],
+    trim: true,
+    maxlength: [500, 'Timeline description cannot exceed 500 characters']
   },
   performedBy: {
-    type: mongoose.Schema.Types.ObjectId,
+    type: Schema.Types.ObjectId,
     ref: 'User',
     required: true
   },
-  performedAt: {
+  performedByRole: {
+    type: String,
+    required: true,
+    enum: ['citizen', 'officer', 'mitra', 'admin', 'system']
+  },
+  metadata: {
+    type: Schema.Types.Mixed,
+    default: {}
+  }
+}, {
+  timestamps: true,
+  _id: true
+});
+
+/**
+ * AI Classification Schema
+ */
+const aiClassificationSchema = new Schema({
+  category: {
+    type: String,
+    required: [true, 'AI category is required'],
+    enum: {
+      values: [
+        'Road and Infrastructure', 'Water Supply', 'Electricity', 'Sanitation',
+        'Traffic and Transportation', 'Health and Safety', 'Education',
+        'Fire Safety', 'Revenue and Tax', 'Urban Planning', 'Environment',
+        'Street Lighting', 'Other'
+      ],
+      message: 'Invalid complaint category'
+    },
+    index: true
+  },
+  department: {
+    type: String,
+    required: [true, 'AI department classification is required'],
+    enum: {
+      values: [
+        'PWD', 'Water Works', 'Electricity', 'Sanitation', 'Traffic Police',
+        'Health Department', 'Education', 'Fire Department', 'Revenue',
+        'Town Planning', 'Horticulture', 'Street Lighting'
+      ],
+      message: 'Invalid department'
+    },
+    index: true
+  },
+  priority: {
+    type: String,
+    required: [true, 'AI priority is required'],
+    enum: {
+      values: ['low', 'medium', 'high', 'critical'],
+      message: 'Priority must be low, medium, high, or critical'
+    },
+    default: 'medium',
+    index: true
+  },
+  confidence: {
+    type: Number,
+    required: [true, 'AI confidence score is required'],
+    min: [0, 'Confidence must be between 0 and 1'],
+    max: [1, 'Confidence must be between 0 and 1'],
+    validate: {
+      validator: function(v) {
+        return v >= 0 && v <= 1;
+      },
+      message: 'Confidence must be between 0 and 1'
+    }
+  },
+  keywords: [{
+    type: String,
+    trim: true,
+    lowercase: true
+  }],
+  model: {
+    type: String,
+    default: 'gemini-pro',
+    trim: true
+  },
+  processedAt: {
+    type: Date,
+    default: Date.now
+  }
+}, {
+  _id: false
+});
+
+/**
+ * SLA (Service Level Agreement) Schema
+ */
+const slaSchema = new Schema({
+  deadline: {
+    type: Date,
+    required: [true, 'SLA deadline is required'],
+    index: true
+  },
+  hoursAllocated: {
+    type: Number,
+    required: [true, 'SLA hours allocated is required'],
+    min: [1, 'SLA hours must be at least 1']
+  },
+  status: {
+    type: String,
+    enum: {
+      values: ['safe', 'warning', 'breach'],
+      message: 'SLA status must be safe, warning, or breach'
+    },
+    default: 'safe',
+    index: true
+  },
+  breachNotificationSent: {
+    type: Boolean,
+    default: false
+  },
+  warningNotificationSent: {
+    type: Boolean,
+    default: false
+  },
+  escalationLevel: {
+    type: Number,
+    default: 0,
+    min: [0, 'Escalation level cannot be negative'],
+    max: [3, 'Maximum escalation level is 3']
+  }
+}, {
+  _id: false
+});
+
+/**
+ * Location Schema with enhanced validation
+ */
+const locationSchema = new Schema({
+  type: {
+    type: String,
+    enum: ['Point'],
+    default: 'Point'
+  },
+  coordinates: {
+    type: [Number],
+    required: [true, 'Location coordinates are required'],
+    validate: {
+      validator: function(v) {
+        return v.length === 2 && 
+               v[0] >= -180 && v[0] <= 180 && // longitude
+               v[1] >= -90 && v[1] <= 90;     // latitude
+      },
+      message: 'Invalid coordinates format [longitude, latitude]'
+    }
+  },
+  address: {
+    type: String,
+    required: [true, 'Location address is required'],
+    trim: true,
+    maxlength: [300, 'Address cannot exceed 300 characters']
+  },
+  landmark: {
+    type: String,
+    trim: true,
+    maxlength: [100, 'Landmark cannot exceed 100 characters']
+  },
+  zone: {
+    type: String,
+    required: [true, 'Zone is required'],
+    enum: {
+      values: [
+        'Zone 1 - Central', 'Zone 2 - East', 'Zone 3 - West', 
+        'Zone 4 - North', 'Zone 5 - South', 'Zone 6 - South-East',
+        'Zone 7 - South-West', 'Zone 8 - North-East', 'Zone 9 - North-West'
+      ],
+      message: 'Please select a valid zone'
+    },
+    index: true
+  }
+}, {
+  _id: false
+});
+
+// Create geospatial index for location
+locationSchema.index({ coordinates: '2dsphere' });
+
+/**
+ * Citizen Information Schema
+ */
+const citizenSchema = new Schema({
+  name: {
+    type: String,
+    required: [true, 'Citizen name is required'],
+    trim: true,
+    maxlength: [100, 'Name cannot exceed 100 characters']
+  },
+  email: {
+    type: String,
+    required: [true, 'Citizen email is required'],
+    lowercase: true,
+    trim: true,
+    validate: [validator.isEmail, 'Please provide a valid email address'],
+    index: true
+  },
+  phoneNumber: {
+    type: String,
+    required: [true, 'Phone number is required'],
+    trim: true,
+    validate: {
+      validator: function(v) {
+        return /^[6-9]\d{9}$/.test(v);
+      },
+      message: 'Please provide a valid Indian mobile number'
+    }
+  },
+  userId: {
+    type: Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+    index: true
+  }
+}, {
+  _id: false
+});
+
+/**
+ * Feedback Schema
+ */
+const feedbackSchema = new Schema({
+  rating: {
+    type: Number,
+    min: [1, 'Rating must be between 1 and 5'],
+    max: [5, 'Rating must be between 1 and 5'],
+    validate: {
+      validator: Number.isInteger,
+      message: 'Rating must be an integer'
+    }
+  },
+  satisfied: {
+    type: Boolean,
+    required: [true, 'Satisfaction status is required']
+  },
+  comments: {
+    type: String,
+    trim: true,
+    maxlength: [1000, 'Feedback comments cannot exceed 1000 characters']
+  },
+  submittedAt: {
     type: Date,
     default: Date.now
   },
-  remarks: {
-    type: String,
-    default: ''
-  },
-  attachments: [{
-    filename: String,
-    originalName: String,
-    path: String,
-    size: Number,
-    mimetype: String,
-    uploadedAt: {
-      type: Date,
-      default: Date.now
-    }
-  }]
+  wouldRecommend: {
+    type: Boolean,
+    default: null
+  }
+}, {
+  _id: false
 });
 
-const complaintSchema = new mongoose.Schema({
-  // Basic complaint information
+/**
+ * Attachment Schema
+ */
+const attachmentSchema = new Schema({
+  filename: {
+    type: String,
+    required: [true, 'Filename is required'],
+    trim: true
+  },
+  originalName: {
+    type: String,
+    required: [true, 'Original filename is required'],
+    trim: true
+  },
+  mimetype: {
+    type: String,
+    required: [true, 'File mimetype is required'],
+    validate: {
+      validator: function(v) {
+        const allowedTypes = [
+          'image/jpeg', 'image/jpg', 'image/png', 'image/webp',
+          'video/mp4', 'video/webm', 'video/quicktime'
+        ];
+        return allowedTypes.includes(v);
+      },
+      message: 'File type not supported. Only images and videos are allowed.'
+    }
+  },
+  size: {
+    type: Number,
+    required: [true, 'File size is required'],
+    max: [10 * 1024 * 1024, 'File size cannot exceed 10MB'] // 10MB limit
+  },
+  path: {
+    type: String,
+    required: [true, 'File path is required'],
+    trim: true
+  },
+  uploadedAt: {
+    type: Date,
+    default: Date.now
+  },
+  uploadedBy: {
+    type: Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  type: {
+    type: String,
+    enum: ['evidence', 'proof_of_work', 'additional'],
+    default: 'evidence'
+  }
+}, {
+  _id: true
+});
+
+/**
+ * Main Complaint Schema
+ */
+const complaintSchema = new Schema({
   complaintId: {
     type: String,
     unique: true,
-    required: true
+    required: [true, 'Complaint ID is required'],
+    uppercase: true,
+    trim: true,
+    index: true
   },
+  
   title: {
     type: String,
     required: [true, 'Complaint title is required'],
     trim: true,
-    maxlength: [200, 'Title cannot exceed 200 characters']
+    minlength: [10, 'Title must be at least 10 characters'],
+    maxlength: [200, 'Title cannot exceed 200 characters'],
+    index: 'text' // Text index for search
   },
+  
   description: {
     type: String,
     required: [true, 'Complaint description is required'],
-    maxlength: [2000, 'Description cannot exceed 2000 characters']
+    trim: true,
+    minlength: [20, 'Description must be at least 20 characters'],
+    maxlength: [2000, 'Description cannot exceed 2000 characters'],
+    index: 'text' // Text index for search
   },
   
-  // AI Classification Results
-  aiClassification: {
-    category: {
-      type: String,
-      enum: [
-        'Road and Infrastructure', 'Water Supply', 'Electricity', 'Sanitation and Waste Management',
-        'Traffic and Transportation', 'Public Safety', 'Health Services', 'Education',
-        'Parks and Recreation', 'Revenue and Tax', 'Municipal Services', 'Other'
-      ],
-      required: true
-    },
-    department: {
-      type: String,
-      enum: [
-        'PWD', 'Water Works', 'Electricity', 'Sanitation', 'Traffic Police',
-        'Municipal Corporation', 'Health Department', 'Education', 'Fire Department',
-        'Parks and Gardens', 'Revenue Department', 'IT Department', 'Other'
-      ],
-      required: true
-    },
-    priority: {
-      type: String,
-      enum: ['low', 'medium', 'high', 'critical'],
-      required: true
-    },
-    confidence: {
-      type: Number,
-      min: 0,
-      max: 1,
-      required: true
-    },
-    keywords: [{
-      type: String
-    }],
-    processedAt: {
-      type: Date,
-      default: Date.now
-    }
+  slug: {
+    type: String,
+    unique: true,
+    lowercase: true,
+    trim: true,
+    index: true
   },
   
-  // Status and Assignment
   status: {
     type: String,
-    enum: ['new', 'assigned', 'in_progress', 'resolved', 'rejected', 'escalated', 'closed'],
-    default: 'new'
-  },
-  assignedOfficer: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    default: null
-  },
-  assignedMitra: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    default: null
-  },
-  mitraPhone: {
-    type: String,
-    default: null
+    required: [true, 'Status is required'],
+    enum: {
+      values: ['new', 'assigned', 'in_progress', 'resolved', 'rejected', 'escalated', 'closed'],
+      message: 'Invalid status value'
+    },
+    default: 'new',
+    index: true
   },
   
-  // Citizen Information
   citizen: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true
+    type: citizenSchema,
+    required: [true, 'Citizen information is required']
   },
   
-  // Location Information
   location: {
-    address: {
-      type: String,
-      required: [true, 'Location address is required']
-    },
-    coordinates: {
-      latitude: {
-        type: Number,
-        required: false
-      },
-      longitude: {
-        type: Number,
-        required: false
-      }
-    },
-    zone: {
-      type: String,
-      enum: ['Zone 1', 'Zone 2', 'Zone 3', 'Zone 4', 'Zone 5', 'Zone 6'],
-      required: true
-    },
-    landmark: {
-      type: String,
-      default: ''
-    }
+    type: locationSchema,
+    required: [true, 'Location is required']
   },
   
-  // SLA Management
+  aiClassification: {
+    type: aiClassificationSchema,
+    required: [true, 'AI classification is required']
+  },
+  
   sla: {
-    deadline: {
-      type: Date,
+    type: slaSchema,
+    required: [true, 'SLA information is required']
+  },
+  
+  // Assignment information
+  assignedOfficer: {
+    type: Schema.Types.ObjectId,
+    ref: 'User',
+    index: true
+  },
+  
+  assignedMitra: {
+    type: Schema.Types.ObjectId,
+    ref: 'User',
+    index: true
+  },
+  
+  assignedAt: {
+    type: Date,
+    index: true
+  },
+  
+  // Progress tracking
+  timeline: [timelineSchema],
+  
+  remarks: [{
+    content: {
+      type: String,
+      required: [true, 'Remark content is required'],
+      trim: true,
+      maxlength: [1000, 'Remark cannot exceed 1000 characters']
+    },
+    addedBy: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
       required: true
     },
-    isBreached: {
+    addedByRole: {
+      type: String,
+      required: true,
+      enum: ['officer', 'mitra', 'admin']
+    },
+    isInternal: {
       type: Boolean,
       default: false
     },
-    breachedAt: {
-      type: Date,
-      default: null
-    },
-    remainingHours: {
-      type: Number,
-      default: 0
-    },
-    status: {
-      type: String,
-      enum: ['safe', 'warning', 'critical', 'breached'],
-      default: 'safe'
-    }
-  },
-  
-  // Attachments (Evidence)
-  attachments: [{
-    filename: String,
-    originalName: String,
-    path: String,
-    size: Number,
-    mimetype: String,
-    uploadedAt: {
-      type: Date,
-      default: Date.now
-    }
-  }],
-  
-  // Timeline of actions
-  timeline: [timelineEntrySchema],
-  
-  // Remarks and Updates
-  remarks: [{
-    text: {
-      type: String,
-      required: true
-    },
-    addedBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-      required: true
-    },
+    attachments: [attachmentSchema],
     addedAt: {
       type: Date,
       default: Date.now
-    },
-    isPublic: {
-      type: Boolean,
-      default: true
     }
   }],
   
-  // Citizen Feedback
+  attachments: [attachmentSchema],
+  
+  // Feedback and closure
   citizenFeedback: {
-    rating: {
-      type: Number,
-      min: 1,
-      max: 5,
-      default: null
-    },
-    satisfied: {
-      type: Boolean,
-      default: null
-    },
-    comments: {
-      type: String,
-      maxlength: [500, 'Feedback comments cannot exceed 500 characters'],
-      default: ''
-    },
-    submittedAt: {
-      type: Date,
-      default: null
-    }
+    type: feedbackSchema,
+    default: null
   },
   
-  // Resolution Information
-  resolution: {
-    description: {
-      type: String,
-      default: ''
-    },
-    resolvedBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-      default: null
-    },
-    resolvedAt: {
-      type: Date,
-      default: null
-    },
-    resolutionTime: {
-      type: Number, // in hours
-      default: null
-    },
-    proofAttachments: [{
-      filename: String,
-      originalName: String,
-      path: String,
-      size: Number,
-      mimetype: String,
-      uploadedAt: {
-        type: Date,
-        default: Date.now
-      }
-    }]
+  resolvedAt: {
+    type: Date,
+    index: true
   },
   
-  // Escalation Information
-  escalation: {
+  closedAt: {
+    type: Date,
+    index: true
+  },
+  
+  // Escalation tracking
+  escalationHistory: [{
     level: {
       type: Number,
-      default: 0
-    },
-    escalatedBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-      default: null
-    },
-    escalatedAt: {
-      type: Date,
-      default: null
+      required: true,
+      min: 1,
+      max: 3
     },
     reason: {
       type: String,
-      default: ''
-    }
-  },
-  
-  // Language
-  language: {
-    type: String,
-    enum: ['en', 'hi'],
-    default: 'en'
-  },
+      required: true,
+      trim: true,
+      maxlength: [500, 'Escalation reason cannot exceed 500 characters']
+    },
+    escalatedBy: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    },
+    escalatedAt: {
+      type: Date,
+      default: Date.now
+    },
+    resolvedAt: Date
+  }],
   
   // Metadata
-  isActive: {
+  priority: {
+    type: String,
+    enum: ['low', 'medium', 'high', 'critical'],
+    default: 'medium',
+    index: true
+  },
+  
+  tags: [{
+    type: String,
+    trim: true,
+    lowercase: true
+  }],
+  
+  isPublic: {
     type: Boolean,
     default: true
   },
-  tags: [{
-    type: String
-  }]
+  
+  viewCount: {
+    type: Number,
+    default: 0,
+    min: [0, 'View count cannot be negative']
+  },
+  
+  lastActivity: {
+    type: Date,
+    default: Date.now,
+    index: true
+  },
+  
+  // Soft delete
+  isDeleted: {
+    type: Boolean,
+    default: false,
+    index: true
+  },
+  
+  deletedAt: Date,
+  deletedBy: {
+    type: Schema.Types.ObjectId,
+    ref: 'User'
+  }
 }, {
   timestamps: true,
   toJSON: { virtuals: true },
   toObject: { virtuals: true }
 });
 
-// Indexes for better query performance
-complaintSchema.index({ complaintId: 1 });
-complaintSchema.index({ citizen: 1 });
-complaintSchema.index({ 'aiClassification.department': 1 });
-complaintSchema.index({ status: 1 });
-complaintSchema.index({ assignedOfficer: 1 });
-complaintSchema.index({ assignedMitra: 1 });
-complaintSchema.index({ 'location.zone': 1 });
-complaintSchema.index({ 'sla.deadline': 1 });
-complaintSchema.index({ createdAt: -1 });
-complaintSchema.index({ 'aiClassification.priority': 1 });
+// Compound indexes for better query performance
+complaintSchema.index({ status: 1, 'aiClassification.department': 1 });
+complaintSchema.index({ 'citizen.email': 1, status: 1 });
+complaintSchema.index({ assignedOfficer: 1, status: 1 });
+complaintSchema.index({ assignedMitra: 1, status: 1 });
+complaintSchema.index({ 'sla.deadline': 1, status: 1 });
+complaintSchema.index({ 'aiClassification.priority': 1, status: 1 });
+complaintSchema.index({ 'location.zone': 1, status: 1 });
+complaintSchema.index({ createdAt: -1, status: 1 });
+complaintSchema.index({ lastActivity: -1 });
 
-// Virtual for SLA status calculation
-complaintSchema.virtual('slaStatus').get(function() {
-  if (this.status === 'resolved' || this.status === 'closed') {
-    return 'completed';
-  }
-  
-  const now = new Date();
-  const deadline = new Date(this.sla.deadline);
-  const hoursRemaining = (deadline - now) / (1000 * 60 * 60);
-  
-  if (hoursRemaining < 0) {
-    return 'breached';
-  } else if (hoursRemaining < 6) {
-    return 'critical';
-  } else if (hoursRemaining < 24) {
-    return 'warning';
-  } else {
-    return 'safe';
-  }
+// Text index for full-text search
+complaintSchema.index({
+  title: 'text',
+  description: 'text',
+  'location.address': 'text',
+  'aiClassification.keywords': 'text'
+}, {
+  weights: {
+    title: 10,
+    description: 5,
+    'location.address': 3,
+    'aiClassification.keywords': 2
+  },
+  name: 'complaint_text_index'
 });
 
-// Virtual for resolution time calculation
-complaintSchema.virtual('actualResolutionTime').get(function() {
-  if (this.resolution.resolvedAt) {
-    const createdAt = new Date(this.createdAt);
-    const resolvedAt = new Date(this.resolution.resolvedAt);
-    return Math.round((resolvedAt - createdAt) / (1000 * 60 * 60)); // in hours
-  }
-  return null;
+// Virtuals
+complaintSchema.virtual('department').get(function() {
+  return this.aiClassification?.department;
 });
 
-// Static method to generate complaint ID
-complaintSchema.statics.generateComplaintId = async function() {
-  const count = await this.countDocuments();
-  const year = new Date().getFullYear();
-  const month = String(new Date().getMonth() + 1).padStart(2, '0');
-  return `C${year}${month}${String(count + 1).padStart(4, '0')}`;
-};
+complaintSchema.virtual('category').get(function() {
+  return this.aiClassification?.category;
+});
 
-// Static method to calculate SLA deadline
-complaintSchema.statics.calculateSLADeadline = function(priority, department) {
+complaintSchema.virtual('isOverdue').get(function() {
+  return this.sla?.deadline && new Date() > this.sla.deadline && 
+         !['resolved', 'closed', 'rejected'].includes(this.status);
+});
+
+complaintSchema.virtual('daysOpen').get(function() {
+  const endDate = this.resolvedAt || this.closedAt || new Date();
+  return Math.ceil((endDate - this.createdAt) / (1000 * 60 * 60 * 24));
+});
+
+complaintSchema.virtual('timeToResolve').get(function() {
+  if (!this.resolvedAt) return null;
+  return Math.ceil((this.resolvedAt - this.createdAt) / (1000 * 60 * 60)); // in hours
+});
+
+complaintSchema.virtual('slaProgress').get(function() {
+  if (!this.sla?.deadline) return 0;
   const now = new Date();
-  let hours = 72; // Default 3 days
-  
-  // Priority-based SLA
-  switch (priority) {
-    case 'critical':
-      hours = 4; // 4 hours
-      break;
-    case 'high':
-      hours = 24; // 1 day
-      break;
-    case 'medium':
-      hours = 48; // 2 days
-      break;
-    case 'low':
-      hours = 72; // 3 days
-      break;
-  }
-  
-  // Department-specific adjustments
-  const urgentDepartments = ['Fire Department', 'Health Department', 'Electricity'];
-  if (urgentDepartments.includes(department)) {
-    hours = Math.max(hours * 0.5, 2); // Reduce by half, minimum 2 hours
-  }
-  
-  return new Date(now.getTime() + hours * 60 * 60 * 1000);
-};
+  const start = this.createdAt;
+  const end = this.sla.deadline;
+  const elapsed = now - start;
+  const total = end - start;
+  return Math.min(Math.max((elapsed / total) * 100, 0), 100);
+});
 
-// Method to update SLA status
-complaintSchema.methods.updateSLAStatus = function() {
-  const now = new Date();
-  const deadline = new Date(this.sla.deadline);
-  const hoursRemaining = (deadline - now) / (1000 * 60 * 60);
-  
-  this.sla.remainingHours = Math.max(hoursRemaining, 0);
-  
-  if (hoursRemaining < 0 && !this.sla.isBreached) {
-    this.sla.isBreached = true;
-    this.sla.breachedAt = now;
-    this.sla.status = 'breached';
-  } else if (hoursRemaining >= 0) {
-    if (hoursRemaining < 6) {
-      this.sla.status = 'critical';
-    } else if (hoursRemaining < 24) {
-      this.sla.status = 'warning';
-    } else {
-      this.sla.status = 'safe';
-    }
-  }
-  
-  return this.save();
-};
-
-// Method to add timeline entry
-complaintSchema.methods.addTimelineEntry = function(action, description, performedBy, remarks = '', attachments = []) {
-  this.timeline.push({
-    action,
-    description,
-    performedBy,
-    remarks,
-    attachments,
-    performedAt: new Date()
-  });
-  return this.save();
-};
-
-// Method to add remark
-complaintSchema.methods.addRemark = function(text, addedBy, isPublic = true) {
-  this.remarks.push({
-    text,
-    addedBy,
-    isPublic,
-    addedAt: new Date()
-  });
-  return this.save();
-};
-
-// Pre-save middleware to update SLA status
+// Pre-save middleware
 complaintSchema.pre('save', function(next) {
-  if (this.isNew) {
-    // Add initial timeline entry
-    this.timeline.push({
-      action: 'submitted',
-      description: 'Complaint submitted by citizen',
-      performedBy: this.citizen,
-      performedAt: new Date()
+  // Generate complaint ID if not exists
+  if (!this.complaintId) {
+    const year = new Date().getFullYear();
+    const month = String(new Date().getMonth() + 1).padStart(2, '0');
+    const timestamp = Date.now().toString().slice(-6);
+    this.complaintId = `IMC${year}${month}${timestamp}`;
+  }
+  
+  // Generate slug from title
+  if (!this.slug || this.isModified('title')) {
+    this.slug = slugify(this.title, {
+      lower: true,
+      strict: true,
+      remove: /[*+~.()'"!:@]/g
     });
   }
   
-  // Update SLA status if not resolved/closed
-  if (this.status !== 'resolved' && this.status !== 'closed') {
-    const now = new Date();
-    const deadline = new Date(this.sla.deadline);
-    const hoursRemaining = (deadline - now) / (1000 * 60 * 60);
+  // Update last activity
+  this.lastActivity = new Date();
+  
+  // Set priority from AI classification if not set
+  if (!this.priority && this.aiClassification?.priority) {
+    this.priority = this.aiClassification.priority;
+  }
+  
+  // Update SLA status
+  this.updateSLAStatus();
+  
+  next();
+});
+
+// Pre-save middleware for timeline updates
+complaintSchema.pre('save', function(next) {
+  if (this.isModified('status') && !this.isNew) {
+    // Auto-add timeline entry for status changes
+    const statusTimeline = {
+      action: this.status,
+      description: `Status changed to ${this.status}`,
+      performedBy: this.lastUpdatedBy || this.citizen.userId,
+      performedByRole: 'system'
+    };
     
-    this.sla.remainingHours = Math.max(hoursRemaining, 0);
-    
-    if (hoursRemaining < 0 && !this.sla.isBreached) {
-      this.sla.isBreached = true;
-      this.sla.breachedAt = now;
-      this.sla.status = 'breached';
-    } else if (hoursRemaining >= 0) {
-      if (hoursRemaining < 6) {
-        this.sla.status = 'critical';
-      } else if (hoursRemaining < 24) {
-        this.sla.status = 'warning';
-      } else {
-        this.sla.status = 'safe';
-      }
-    }
+    this.timeline.push(statusTimeline);
   }
   
   next();
 });
 
-// Static method for analytics
-complaintSchema.statics.getAnalytics = async function(filters = {}) {
-  const pipeline = [];
+// Instance Methods
+complaintSchema.methods.updateSLAStatus = function() {
+  if (!this.sla?.deadline) return;
   
-  // Match stage
-  if (Object.keys(filters).length > 0) {
-    pipeline.push({ $match: filters });
+  const now = new Date();
+  const deadline = this.sla.deadline;
+  const hoursRemaining = (deadline - now) / (1000 * 60 * 60);
+  
+  if (now > deadline) {
+    this.sla.status = 'breach';
+  } else if (hoursRemaining <= this.sla.hoursAllocated * 0.2) { // 20% time remaining
+    this.sla.status = 'warning';
+  } else {
+    this.sla.status = 'safe';
   }
-  
-  // Group by various dimensions
-  pipeline.push({
-    $group: {
-      _id: null,
-      total: { $sum: 1 },
-      resolved: {
-        $sum: { $cond: [{ $eq: ['$status', 'resolved'] }, 1, 0] }
-      },
-      pending: {
-        $sum: { $cond: [{ $ne: ['$status', 'resolved'] }, 1, 0] }
-      },
-      slaBreached: {
-        $sum: { $cond: ['$sla.isBreached', 1, 0] }
-      },
-      avgResolutionTime: {
-        $avg: '$resolution.resolutionTime'
-      },
-      byPriority: {
-        $push: '$aiClassification.priority'
-      },
-      byDepartment: {
-        $push: '$aiClassification.department'
-      },
-      byZone: {
-        $push: '$location.zone'
-      }
-    }
-  });
-  
-  return this.aggregate(pipeline);
 };
 
-module.exports = mongoose.model('Complaint', complaintSchema);
+complaintSchema.methods.addTimelineEntry = function(action, description, performedBy, performedByRole, metadata = {}) {
+  this.timeline.push({
+    action,
+    description,
+    performedBy,
+    performedByRole,
+    metadata
+  });
+  
+  this.lastActivity = new Date();
+  return this.save();
+};
+
+complaintSchema.methods.addRemark = function(content, addedBy, addedByRole, isInternal = false, attachments = []) {
+  this.remarks.push({
+    content,
+    addedBy,
+    addedByRole,
+    isInternal,
+    attachments
+  });
+  
+  this.lastActivity = new Date();
+  return this.save();
+};
+
+complaintSchema.methods.assignToMitra = async function(mitraId, assignedBy) {
+  this.assignedMitra = mitraId;
+  this.assignedAt = new Date();
+  this.status = 'assigned';
+  
+  await this.addTimelineEntry(
+    'assigned',
+    `Complaint assigned to Mitra`,
+    assignedBy,
+    'officer',
+    { mitraId }
+  );
+  
+  return this.save();
+};
+
+complaintSchema.methods.updateStatus = async function(newStatus, updatedBy, updatedByRole, remarks = '') {
+  const oldStatus = this.status;
+  this.status = newStatus;
+  
+  if (newStatus === 'resolved') {
+    this.resolvedAt = new Date();
+  } else if (newStatus === 'closed') {
+    this.closedAt = new Date();
+  }
+  
+  await this.addTimelineEntry(
+    newStatus,
+    remarks || `Status updated from ${oldStatus} to ${newStatus}`,
+    updatedBy,
+    updatedByRole
+  );
+  
+  if (remarks) {
+    await this.addRemark(remarks, updatedBy, updatedByRole);
+  }
+  
+  return this.save();
+};
+
+complaintSchema.methods.escalate = function(reason, escalatedBy, level = null) {
+  const currentLevel = this.sla.escalationLevel + 1;
+  const escalationLevel = level || currentLevel;
+  
+  this.sla.escalationLevel = Math.min(escalationLevel, 3);
+  this.status = 'escalated';
+  
+  this.escalationHistory.push({
+    level: escalationLevel,
+    reason,
+    escalatedBy
+  });
+  
+  this.addTimelineEntry(
+    'escalated',
+    `Complaint escalated to level ${escalationLevel}: ${reason}`,
+    escalatedBy,
+    'system',
+    { level: escalationLevel, reason }
+  );
+  
+  return this.save();
+};
+
+// Static Methods
+complaintSchema.statics.generateComplaintId = function() {
+  const year = new Date().getFullYear();
+  const month = String(new Date().getMonth() + 1).padStart(2, '0');
+  const timestamp = Date.now().toString().slice(-6);
+  return `IMC${year}${month}${timestamp}`;
+};
+
+complaintSchema.statics.calculateSLA = function(department, category, priority) {
+  const slaMatrix = {
+    'PWD': { 'critical': 4, 'high': 24, 'medium': 72, 'low': 168 },
+    'Water Works': { 'critical': 2, 'high': 8, 'medium': 48, 'low': 120 },
+    'Electricity': { 'critical': 1, 'high': 4, 'medium': 24, 'low': 72 },
+    'Sanitation': { 'critical': 6, 'high': 24, 'medium': 72, 'low': 168 },
+    'Traffic Police': { 'critical': 2, 'high': 8, 'medium': 48, 'low': 120 },
+    'Health Department': { 'critical': 2, 'high': 12, 'medium': 48, 'low': 120 },
+    'Education': { 'critical': 24, 'high': 72, 'medium': 168, 'low': 336 },
+    'Fire Department': { 'critical': 1, 'high': 2, 'medium': 12, 'low': 48 },
+    'Revenue': { 'critical': 24, 'high': 72, 'medium': 168, 'low': 336 },
+    'Town Planning': { 'critical': 48, 'high': 168, 'medium': 336, 'low': 720 },
+    'Horticulture': { 'critical': 12, 'high': 48, 'medium': 168, 'low': 336 },
+    'Street Lighting': { 'critical': 4, 'high': 24, 'medium': 72, 'low': 168 }
+  };
+  
+  const departmentSLA = slaMatrix[department] || slaMatrix['PWD'];
+  const hours = departmentSLA[priority] || departmentSLA['medium'];
+  
+  return {
+    hoursAllocated: hours,
+    deadline: new Date(Date.now() + hours * 60 * 60 * 1000),
+    status: 'safe'
+  };
+};
+
+complaintSchema.statics.getComplaintStats = async function(filter = {}) {
+  const pipeline = [
+    { $match: { isDeleted: false, ...filter } },
+    {
+      $group: {
+        _id: null,
+        total: { $sum: 1 },
+        new: { $sum: { $cond: [{ $eq: ['$status', 'new'] }, 1, 0] } },
+        assigned: { $sum: { $cond: [{ $eq: ['$status', 'assigned'] }, 1, 0] } },
+        inProgress: { $sum: { $cond: [{ $eq: ['$status', 'in_progress'] }, 1, 0] } },
+        resolved: { $sum: { $cond: [{ $eq: ['$status', 'resolved'] }, 1, 0] } },
+        closed: { $sum: { $cond: [{ $eq: ['$status', 'closed'] }, 1, 0] } },
+        escalated: { $sum: { $cond: [{ $eq: ['$status', 'escalated'] }, 1, 0] } },
+        rejected: { $sum: { $cond: [{ $eq: ['$status', 'rejected'] }, 1, 0] } },
+        overdue: { $sum: { $cond: [{ $and: [
+          { $gt: [new Date(), '$sla.deadline'] },
+          { $not: { $in: ['$status', ['resolved', 'closed', 'rejected']] } }
+        ] }, 1, 0] } },
+        avgRating: { $avg: '$citizenFeedback.rating' }
+      }
+    }
+  ];
+  
+  const result = await this.aggregate(pipeline);
+  return result[0] || {
+    total: 0, new: 0, assigned: 0, inProgress: 0, resolved: 0,
+    closed: 0, escalated: 0, rejected: 0, overdue: 0, avgRating: 0
+  };
+};
+
+complaintSchema.statics.getDepartmentStats = async function(department) {
+  return this.getComplaintStats({ 'aiClassification.department': department });
+};
+
+complaintSchema.statics.getZoneStats = async function(zone) {
+  return this.getComplaintStats({ 'location.zone': zone });
+};
+
+complaintSchema.statics.searchComplaints = function(query, options = {}) {
+  const {
+    department,
+    status,
+    priority,
+    zone,
+    dateFrom,
+    dateTo,
+    limit = 20,
+    skip = 0,
+    sort = { createdAt: -1 }
+  } = options;
+  
+  const filter = { isDeleted: false };
+  
+  if (query) {
+    filter.$text = { $search: query };
+  }
+  
+  if (department) filter['aiClassification.department'] = department;
+  if (status) filter.status = status;
+  if (priority) filter['aiClassification.priority'] = priority;
+  if (zone) filter['location.zone'] = zone;
+  
+  if (dateFrom || dateTo) {
+    filter.createdAt = {};
+    if (dateFrom) filter.createdAt.$gte = new Date(dateFrom);
+    if (dateTo) filter.createdAt.$lte = new Date(dateTo);
+  }
+  
+  return this.find(filter)
+    .sort(sort)
+    .limit(limit)
+    .skip(skip)
+    .populate('assignedOfficer', 'name email employeeId')
+    .populate('assignedMitra', 'name email employeeId')
+    .populate('timeline.performedBy', 'name role')
+    .populate('remarks.addedBy', 'name role');
+};
+
+const Complaint = mongoose.model('Complaint', complaintSchema);
+
+export default Complaint;

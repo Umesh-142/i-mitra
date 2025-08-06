@@ -1,198 +1,68 @@
-const jwt = require('jsonwebtoken');
-const User = require('../models/User');
+import jwt from 'jsonwebtoken';
+import { asyncHandler, ErrorResponse } from './errorHandler.js';
+import User from '../models/User.js';
 
 /**
- * Protect routes - verify JWT token
+ * Protect routes - Verify JWT token and set req.user
  */
-const protect = async (req, res, next) => {
+export const protect = asyncHandler(async (req, res, next) => {
   let token;
-  
-  // Check for token in header
-  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+
+  // Check for token in Authorization header
+  if (req.headers.authorization?.startsWith('Bearer')) {
     token = req.headers.authorization.split(' ')[1];
   }
-  
   // Check for token in cookies (optional)
-  else if (req.cookies && req.cookies.token) {
+  else if (req.cookies?.token) {
     token = req.cookies.token;
   }
-  
+
   // Make sure token exists
   if (!token) {
-    return res.status(401).json({
-      success: false,
-      message: 'Not authorized to access this route'
-    });
+    return next(new ErrorResponse('Not authorized to access this route', 401));
   }
-  
+
   try {
     // Verify token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    
-    // Get user from database
+
+    // Get user from token and exclude password
     const user = await User.findById(decoded.id).select('-password');
     
     if (!user) {
-      return res.status(401).json({
-        success: false,
-        message: 'No user found with this token'
-      });
+      return next(new ErrorResponse('User not found with this token', 401));
     }
-    
+
+    // Check if user is active
     if (!user.isActive) {
-      return res.status(401).json({
-        success: false,
-        message: 'User account is deactivated'
-      });
+      return next(new ErrorResponse('Account has been deactivated', 401));
     }
-    
-    // Add user to request object
+
+    // Check if password was changed after token was issued
+    if (user.passwordChangedAt && decoded.iat < user.passwordChangedAt.getTime() / 1000) {
+      return next(new ErrorResponse('Password was recently changed. Please log in again.', 401));
+    }
+
     req.user = user;
     next();
   } catch (error) {
-    console.error('Auth middleware error:', error);
-    return res.status(401).json({
-      success: false,
-      message: 'Not authorized to access this route'
-    });
+    console.error('Token verification error:', error.message);
+    return next(new ErrorResponse('Not authorized to access this route', 401));
   }
-};
+});
 
 /**
- * Role-based access control
- * @param {...string} roles - Allowed roles
+ * Optional authentication - Set req.user if token exists but don't require it
  */
-const authorize = (...roles) => {
-  return (req, res, next) => {
-    if (!req.user) {
-      return res.status(401).json({
-        success: false,
-        message: 'Not authorized to access this route'
-      });
-    }
-    
-    if (!roles.includes(req.user.role)) {
-      return res.status(403).json({
-        success: false,
-        message: `User role ${req.user.role} is not authorized to access this route`
-      });
-    }
-    
-    next();
-  };
-};
-
-/**
- * Department-based access control for officers and mitra
- */
-const authorizeDepartment = (req, res, next) => {
-  if (!req.user) {
-    return res.status(401).json({
-      success: false,
-      message: 'Not authorized to access this route'
-    });
-  }
-  
-  // Admin can access all departments
-  if (req.user.role === 'admin') {
-    return next();
-  }
-  
-  // For officers and mitra, check department access
-  if ((req.user.role === 'officer' || req.user.role === 'mitra') && req.user.department) {
-    req.userDepartment = req.user.department;
-    return next();
-  }
-  
-  return res.status(403).json({
-    success: false,
-    message: 'Department access required'
-  });
-};
-
-/**
- * Check if user can access specific complaint
- */
-const authorizeComplaintAccess = async (req, res, next) => {
-  try {
-    const Complaint = require('../models/Complaint');
-    const complaintId = req.params.id || req.params.complaintId;
-    
-    if (!complaintId) {
-      return res.status(400).json({
-        success: false,
-        message: 'Complaint ID is required'
-      });
-    }
-    
-    const complaint = await Complaint.findById(complaintId);
-    
-    if (!complaint) {
-      return res.status(404).json({
-        success: false,
-        message: 'Complaint not found'
-      });
-    }
-    
-    const user = req.user;
-    let hasAccess = false;
-    
-    switch (user.role) {
-      case 'admin':
-        hasAccess = true;
-        break;
-        
-      case 'citizen':
-        // Citizens can only access their own complaints
-        hasAccess = complaint.citizen.toString() === user._id.toString();
-        break;
-        
-      case 'officer':
-        // Officers can access complaints in their department
-        hasAccess = complaint.aiClassification.department === user.department ||
-                   complaint.assignedOfficer?.toString() === user._id.toString();
-        break;
-        
-      case 'mitra':
-        // Mitra can access assigned complaints in their department
-        hasAccess = (complaint.aiClassification.department === user.department &&
-                    complaint.assignedMitra?.toString() === user._id.toString());
-        break;
-        
-      default:
-        hasAccess = false;
-    }
-    
-    if (!hasAccess) {
-      return res.status(403).json({
-        success: false,
-        message: 'Not authorized to access this complaint'
-      });
-    }
-    
-    // Add complaint to request for use in controller
-    req.complaint = complaint;
-    next();
-    
-  } catch (error) {
-    console.error('Complaint access authorization error:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Error checking complaint access'
-    });
-  }
-};
-
-/**
- * Optional auth - doesn't fail if no token provided
- */
-const optionalAuth = async (req, res, next) => {
+export const optionalAuth = asyncHandler(async (req, res, next) => {
   let token;
-  
-  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+
+  if (req.headers.authorization?.startsWith('Bearer')) {
     token = req.headers.authorization.split(' ')[1];
+  } else if (req.cookies?.token) {
+    token = req.cookies.token;
   }
-  
+
   if (token) {
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
@@ -202,28 +72,213 @@ const optionalAuth = async (req, res, next) => {
         req.user = user;
       }
     } catch (error) {
-      // Ignore errors for optional auth
+      // Silently fail for optional auth
       console.log('Optional auth failed:', error.message);
     }
   }
-  
+
   next();
+});
+
+/**
+ * Grant access to specific roles
+ */
+export const authorize = (...roles) => {
+  return (req, res, next) => {
+    if (!req.user) {
+      return next(new ErrorResponse('Not authorized to access this route', 401));
+    }
+
+    if (!roles.includes(req.user.role)) {
+      return next(
+        new ErrorResponse(
+          `User role '${req.user.role}' is not authorized to access this route`,
+          403
+        )
+      );
+    }
+
+    next();
+  };
 };
+
+/**
+ * Authorize access to specific departments (for officers and mitra)
+ */
+export const authorizeDepartment = (...departments) => {
+  return (req, res, next) => {
+    if (!req.user) {
+      return next(new ErrorResponse('Not authorized to access this route', 401));
+    }
+
+    // Admin can access all departments
+    if (req.user.role === 'admin') {
+      return next();
+    }
+
+    // Check if user has department access
+    if (!req.user.department || !departments.includes(req.user.department)) {
+      return next(
+        new ErrorResponse(
+          `Access denied for department '${req.user.department}'`,
+          403
+        )
+      );
+    }
+
+    next();
+  };
+};
+
+/**
+ * Authorize access to specific complaint based on user role and department
+ */
+export const authorizeComplaintAccess = asyncHandler(async (req, res, next) => {
+  const { user } = req;
+  const complaintId = req.params.id || req.params.complaintId;
+
+  if (!user) {
+    return next(new ErrorResponse('Not authorized to access this route', 401));
+  }
+
+  // Import Complaint model dynamically to avoid circular imports
+  const { default: Complaint } = await import('../models/Complaint.js');
+  
+  const complaint = await Complaint.findById(complaintId);
+  
+  if (!complaint) {
+    return next(new ErrorResponse('Complaint not found', 404));
+  }
+
+  let hasAccess = false;
+
+  switch (user.role) {
+    case 'admin':
+      // Admin can access all complaints
+      hasAccess = true;
+      break;
+      
+    case 'citizen':
+      // Citizens can only access their own complaints
+      hasAccess = complaint.citizen.email === user.email;
+      break;
+      
+    case 'officer':
+      // Officers can access complaints in their department
+      hasAccess = complaint.department === user.department;
+      break;
+      
+    case 'mitra':
+      // Mitra can access complaints assigned to them or in their department
+      hasAccess = 
+        complaint.assignedMitra?.toString() === user._id.toString() ||
+        complaint.department === user.department;
+      break;
+      
+    default:
+      hasAccess = false;
+  }
+
+  if (!hasAccess) {
+    return next(
+      new ErrorResponse('Not authorized to access this complaint', 403)
+    );
+  }
+
+  // Attach complaint to request for use in controller
+  req.complaint = complaint;
+  next();
+});
 
 /**
  * Rate limiting for sensitive operations
  */
-const sensitiveOpLimit = (req, res, next) => {
-  // This can be extended with Redis for distributed rate limiting
-  // For now, just pass through
-  next();
+export const sensitiveOpLimit = (maxAttempts = 3, windowMs = 15 * 60 * 1000) => {
+  const attempts = new Map();
+
+  return (req, res, next) => {
+    const key = `${req.ip}-${req.user?.id || 'anonymous'}`;
+    const now = Date.now();
+    
+    // Clean old entries
+    for (const [k, v] of attempts.entries()) {
+      if (now - v.timestamp > windowMs) {
+        attempts.delete(k);
+      }
+    }
+
+    const userAttempts = attempts.get(key);
+    
+    if (userAttempts && userAttempts.count >= maxAttempts) {
+      return next(
+        new ErrorResponse(
+          `Too many attempts. Please try again in ${Math.ceil(windowMs / 60000)} minutes.`,
+          429
+        )
+      );
+    }
+
+    // Update attempts
+    if (userAttempts) {
+      userAttempts.count++;
+    } else {
+      attempts.set(key, { count: 1, timestamp: now });
+    }
+
+    next();
+  };
 };
 
-module.exports = {
-  protect,
-  authorize,
-  authorizeDepartment,
-  authorizeComplaintAccess,
-  optionalAuth,
-  sensitiveOpLimit
+/**
+ * Verify phone number ownership for sensitive operations
+ */
+export const verifyPhoneOwnership = asyncHandler(async (req, res, next) => {
+  const { phoneNumber } = req.body;
+  const { user } = req;
+
+  if (!phoneNumber) {
+    return next(new ErrorResponse('Phone number is required', 400));
+  }
+
+  // Check if phone belongs to current user
+  if (user.phoneNumber !== phoneNumber) {
+    return next(new ErrorResponse('Phone number does not match your account', 403));
+  }
+
+  // Check if phone is verified
+  if (!user.isPhoneVerified) {
+    return next(new ErrorResponse('Phone number must be verified first', 403));
+  }
+
+  next();
+});
+
+/**
+ * Check if user owns the resource (generic ownership check)
+ */
+export const checkOwnership = (Model, userField = 'user') => {
+  return asyncHandler(async (req, res, next) => {
+    const resource = await Model.findById(req.params.id);
+    
+    if (!resource) {
+      return next(new ErrorResponse('Resource not found', 404));
+    }
+
+    // Admin can access all resources
+    if (req.user.role === 'admin') {
+      req.resource = resource;
+      return next();
+    }
+
+    // Check ownership
+    const resourceUserId = resource[userField]?.toString() || resource[userField];
+    const currentUserId = req.user._id.toString();
+
+    if (resourceUserId !== currentUserId) {
+      return next(new ErrorResponse('Not authorized to access this resource', 403));
+    }
+
+    req.resource = resource;
+    next();
+  });
 };

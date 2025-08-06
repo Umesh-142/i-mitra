@@ -1,13 +1,18 @@
 {
   "name": "i-mitra-frontend",
   "version": "1.0.0",
-  "description": "i-Mitra Frontend React Application",
+  "description": "Frontend for i-Mitra Grievance Management System",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --host",
     "build": "vite build",
     "preview": "vite preview",
-    "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0"
+    "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0",
+    "lint:fix": "eslint . --ext js,jsx --fix",
+    "format": "prettier --write \"src/**/*.{js,jsx,css,md}\"",
+    "test": "vitest",
+    "test:ui": "vitest --ui",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "react": "^18.2.0",
@@ -15,30 +20,62 @@
     "react-router-dom": "^6.20.1",
     "axios": "^1.6.2",
     "socket.io-client": "^4.7.4",
+    "react-hot-toast": "^2.4.1",
+    "react-hook-form": "^7.48.2",
+    "react-query": "^3.39.3",
+    "zustand": "^4.4.7",
+    "clsx": "^2.0.0",
+    "date-fns": "^2.30.0",
+    "framer-motion": "^10.16.16",
     "recharts": "^2.8.0",
     "react-leaflet": "^4.2.1",
     "leaflet": "^1.9.4",
     "lucide-react": "^0.294.0",
-    "react-hot-toast": "^2.4.1",
-    "react-hook-form": "^7.48.2",
-    "date-fns": "^2.30.0",
-    "clsx": "^2.0.0",
-    "tailwind-merge": "^2.0.0"
+    "@heroicons/react": "^2.0.18",
+    "react-dropzone": "^14.2.3",
+    "react-intersection-observer": "^9.5.3",
+    "react-virtualized-auto-sizer": "^1.0.20",
+    "react-window": "^1.8.8",
+    "react-select": "^5.8.0",
+    "react-datepicker": "^4.25.0",
+    "react-loading-skeleton": "^3.3.1",
+    "react-error-boundary": "^4.0.11"
   },
   "devDependencies": {
-    "@types/react": "^18.2.37",
-    "@types/react-dom": "^18.2.15",
-    "@vitejs/plugin-react": "^4.1.1",
-    "vite": "^5.0.0",
-    "tailwindcss": "^3.3.6",
-    "autoprefixer": "^10.4.16",
-    "postcss": "^8.4.32",
-    "eslint": "^8.53.0",
+    "@types/react": "^18.2.43",
+    "@types/react-dom": "^18.2.17",
+    "@vitejs/plugin-react": "^4.2.1",
+    "vite": "^5.0.8",
+    "eslint": "^8.55.0",
     "eslint-plugin-react": "^7.33.2",
     "eslint-plugin-react-hooks": "^4.6.0",
-    "eslint-plugin-react-refresh": "^0.4.4"
+    "eslint-plugin-react-refresh": "^0.4.5",
+    "prettier": "^3.1.1",
+    "autoprefixer": "^10.4.16",
+    "postcss": "^8.4.32",
+    "tailwindcss": "^3.3.6",
+    "@tailwindcss/forms": "^0.5.7",
+    "@tailwindcss/typography": "^0.5.10",
+    "@tailwindcss/aspect-ratio": "^0.4.2",
+    "vitest": "^1.0.4",
+    "@testing-library/react": "^14.1.2",
+    "@testing-library/jest-dom": "^6.1.5",
+    "@testing-library/user-event": "^14.5.1",
+    "jsdom": "^23.0.1"
   },
-  "keywords": ["react", "vite", "grievance", "management", "frontend"],
-  "author": "i-Mitra Development Team",
-  "license": "MIT"
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  }
 }
